@@ -1,58 +1,62 @@
 package main
+
 import (
-    "fmt"
+    "context"
+    "crypto/tls"
+    "io"
+    "log"
     "ajb497/ptmp"
     "github.com/quic-go/quic-go"
-    "crypto/tls"
-    "context"
-    "time"
-)
-// hard-coded host name used for this demonstration program
-const (
-    HOSTNAME string = "localhost:20202"
 )
 
-func setup_connection(hostname string) (quic.Stream, error) {
-    tls_config := &tls.Config{
-                              InsecureSkipVerify: true,
-                              NextProtos: []string{"quic-security-setup"},
-                          }
-                                             // host to connect to, configuration of TLS for the connection, miscellaneous additional QUIC configuration items
-    connection, error_status := quic.DialAddr(hostname, tls_config, nil)
-    if error_status != nil {
-        return nil, error_status
+var buff_incoming = make([]byte, 2048)
+const HOST string = "localhost:10101"
+
+
+func connect_to_server(host string) (quic.Stream, error) {
+    tls_conf := &tls.Config{
+        InsecureSkipVerify: true,
+        NextProtos:         []string{"quic-security-setup"},
     }
-    fmt.Println("Client-side connection configured!")
-    return connection.OpenStreamSync(context.Background())
+    conn2srv, err_status := quic.DialAddr(host, tls_conf, nil)
+    if err_status != nil {
+        return nil, err_status
+    }
+
+    return conn2srv.OpenStreamSync(context.Background())
 }
 
-func send_msg(outstream quic.Stream, ptmp_out ptmp.PTMP_Msg) (int, error) {
-//     outgoing_bytes := ptmp.EncodePacket(ptmp_out)
-    num_out, err_status := outstream.Write([]byte{1,2,3,4, 0})//outgoing_bytes)
+func recv(stream quic.Stream) error {
+
+    num_bytes_in, err_status := stream.Read(buff_incoming)
+    if (err_status != nil) && (err_status != io.ErrUnexpectedEOF) {
+        log.Printf("ERROR GETTING SERVER RESPONSE %+v", err_status)
+        return err_status
+    }
+
+    pckt := ptmp.DecodePacket(buff_incoming[0:num_bytes_in])
+    log.Printf("RECEIVED\n----------\n%+v\n----------", pckt)
+    return nil
+}
+
+func xmit(stream quic.Stream, ptmp_out ptmp.PTMP_Msg) (int, error) {
+    serialized := ptmp.EncodePacket(ptmp_out)
+    num_bytes_out, err_status := stream.Write(serialized)
     if err_status != nil {
+        log.Printf("Error writing to server: %+v", err_status)
         return 0, err_status
     }
-    return num_out, err_status
+    log.Printf("Just sent %d bytes to server\n%+v\n", num_bytes_out, serialized)
+    return num_bytes_out, err_status
 }
 
 func main() {
-    fmt.Println("Welcome to Alec's client for the PTMP.")
-//     ptmp.Test()
-    quicConnection, errStat := setup_connection("localhost:20202")
-    if quicConnection == nil || errStat != nil {
-        fmt.Printf("Connection unable to be established.  Error:\n\t%v\n",errStat)
-    } else {
-        fmt.Printf("I guess there wasn't an error in the connection setup?\n")
-    }
-    fmt.Printf("Tried to make a connection: %+v\n%+v", quicConnection, errStat)
+    connection, _ := connect_to_server(HOST)
+    req_conn := ptmp.Prep_Request_Connection("Alec", "not a password", 42, []uint16{1}, []uint16{})
+    xmit(connection, req_conn)
+    recv(connection)
+	xmit(connection, req_conn)
 
-    time.Sleep(time.Second*6)
-    conn_req := ptmp.Prep_Request_Connection("Alec", "not a real password",
-                                             42, []uint16{1}, []uint16{})
-
-    b_sent, errStat := send_msg(quicConnection, conn_req)
-    fmt.Printf("Bytes sent: %d, error status: %v\n",b_sent, errStat)
-    quicConnection.Close()
-    <-quicConnection.Context().Done()
-    return
+    connection.Close()
+    <-connection.Context().Done()
 }

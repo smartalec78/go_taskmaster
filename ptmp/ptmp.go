@@ -83,7 +83,15 @@ type Request_Connection struct {
     Number_Extensions_Supported uint16
     Extensions_Supported []uint16
     Padding []byte
+}
 
+type Connection_Rules struct {
+    Username_Ok byte
+    Password_Ok byte
+    Protocol_Version_To_Use uint16
+    Number_Acceptable_Exts uint16
+    Acceptable_Exts []uint16
+    Padding []byte
 }
 
 func GetFixedBytes(b *bytes.Buffer, required_size uint16) [MAX_PAYLOAD_SIZE]byte {
@@ -99,13 +107,46 @@ func GetFixedBytes(b *bytes.Buffer, required_size uint16) [MAX_PAYLOAD_SIZE]byte
     return out_arr
 }
 
-func (RC Request_Connection) ToBytes() [MAX_PAYLOAD_SIZE]byte {
+type PAYLOADS interface {
+    Request_Connection | Connection_Rules
+}
+
+
+func EncodePayload[V PAYLOADS](msg V) [MAX_PAYLOAD_SIZE]byte {
     buff_temp := bytes.Buffer{}
     data_encoder := gob.NewEncoder(&buff_temp)
-    data_encoder.Encode(RC)
-    
+    data_encoder.Encode(msg)
     return GetFixedBytes(&buff_temp, MAX_PAYLOAD_SIZE)
 }
+
+// I'm pretty sure go has a better way to do this than writing
+// encoder/decoder functions for each message type, but I haven't found
+// a clear tutorial on how to do that, so this is what I'm stuck with.
+// func (RC Request_Connection) ToBytes() [MAX_PAYLOAD_SIZE]byte {
+//     buff_temp := bytes.Buffer{}
+//     data_encoder := gob.NewEncoder(&buff_temp)
+//     data_encoder.Encode(RC)
+//
+//     return GetFixedBytes(&buff_temp, MAX_PAYLOAD_SIZE)
+// }
+//
+// func (CR Connection_Rules) ToBytes() [MAX_PAYLOAD_SIZE]byte {
+//     buff_temp := bytes.Buffer{}
+//     data_encoder := gob.NewEncoder(&buff_temp)
+//     data_encoder.Encode(CR)
+//     return GetFixedBytes(&buff_temp, MAX_PAYLOAD_SIZE)
+// }
+//
+func Decode_Connection_Rules(bytes_in [MAX_PAYLOAD_SIZE]byte) *Connection_Rules {
+    new_arr := make([]byte, MAX_PAYLOAD_SIZE)
+    copy(new_arr, bytes_in[:MAX_PAYLOAD_SIZE])
+    buff_temp := bytes.NewBuffer(new_arr)
+    data_decoder := gob.NewDecoder(buff_temp)
+    cr_out := &Connection_Rules{}
+    data_decoder.Decode(cr_out)
+    return cr_out
+}
+
 
 func Decode_Request_Connection(bytes_in [MAX_PAYLOAD_SIZE]byte) *Request_Connection {
     new_arr := make([]byte, MAX_PAYLOAD_SIZE)
@@ -117,12 +158,13 @@ func Decode_Request_Connection(bytes_in [MAX_PAYLOAD_SIZE]byte) *Request_Connect
     return rc_out
 }
 
-
+// All PTMP_Msgs consist of a common header and a payload converted into a plain byte-array.
 type PTMP_Msg struct {
     Hdr PTMP_Header
     Pld [MAX_PAYLOAD_SIZE]byte
 }
 
+// Encode the full PTMP_Msg into a byte array to go out over QUIC.
 func EncodePacket(the_msg PTMP_Msg) []byte {
 
     buff_temp := bytes.Buffer{}
@@ -132,6 +174,9 @@ func EncodePacket(the_msg PTMP_Msg) []byte {
     return buff_temp.Bytes()
 }
 
+// Decode the raw byte-stream that is received over a connection so that the
+// header may be parsed, thus allowing the payload of the message to be forwarded
+// to the appopriate payload decoder function.
 func DecodePacket(bytes_in []byte) *PTMP_Msg {
     temp_buff := bytes.NewBuffer(bytes_in)
     data_decoder := gob.NewDecoder(temp_buff)
@@ -142,7 +187,7 @@ func DecodePacket(bytes_in []byte) *PTMP_Msg {
 
 
 
-
+// Assembles the generic header message for all PTMP_Msgs.
 func prepHdr(msg_type byte, num_to_follow byte, payload_byte_length uint16) PTMP_Header {
     return PTMP_Header{
             Protocol_Version: CURR_PROTOCOL_VERSION,
@@ -151,12 +196,15 @@ func prepHdr(msg_type byte, num_to_follow byte, payload_byte_length uint16) PTMP
             Payload_Byte_Length: payload_byte_length,
         }
 }
+
+// Creates an array of bytes set to zero of the length specified.
 func make_padding(num_bytes uint16) []byte {
     arrOut := make([]byte, num_bytes)
 
     return arrOut
 }
 
+// Forces a string to be no longer than the specified length.
 func trunc(inStr string, max_length uint16) string {
     if uint16(len(inStr)) <= max_length {
         return inStr
@@ -172,7 +220,7 @@ func Prep_Request_Connection(username string,
                              extensions_supported []uint16) PTMP_Msg {
     req_conn := PTMP_Msg{}
     pld_size := USERNAME_SIZE + PASSWORD_SIZE + 6 + uint16(2*len(versions_supported) + 2*len(extensions_supported))
-    fmt.Printf("The payload size is %v.\n",pld_size)
+//     fmt.Printf("The payload size is %v.\n",pld_size)
     req_conn.Hdr = prepHdr(REQUEST_CONNECTION, 0, pld_size)
     pld := Request_Connection{
         Timeout_Rule_Request: timeout_request,
@@ -200,10 +248,40 @@ func Prep_Request_Connection(username string,
         }
     }
     pld.Password = pw
-    req_conn.Pld = pld.ToBytes()
+    req_conn.Pld = EncodePayload(pld)//pld.ToBytes()
 
     return req_conn
 }
+
+func bool2byte(b_in bool) byte {
+    // It is ridiculous that I need to make a function for this... how is it not legal to directly cast a bool to a byte?!
+    if b_in {
+        return byte(1)
+    } else {
+        return byte(0)
+    }
+
+}
+
+func Prep_Connection_Rules(uname_ok bool,
+                           pw_ok bool,
+                           proto_ver uint16,
+                           acceptable_exts []uint16) PTMP_Msg {
+    conn_rules := PTMP_Msg{}
+    pld_size := 6 + len(acceptable_exts) * 2
+    conn_rules.Hdr = prepHdr(CONNECTION_RULES, 0, uint16(pld_size))
+    pld := Connection_Rules{
+                            Username_Ok: bool2byte(uname_ok),
+                            Password_Ok: bool2byte(pw_ok),
+                            Protocol_Version_To_Use: proto_ver,
+                            Number_Acceptable_Exts: uint16(len(acceptable_exts)),
+                            Acceptable_Exts: acceptable_exts,
+                            Padding: make_padding(MAX_PAYLOAD_SIZE - uint16(pld_size)),
+                            }
+    conn_rules.Pld = EncodePayload(pld)
+    return conn_rules
+}
+
 
 func Test() {
     fmt.Println("Entering PTMP test functions.")
