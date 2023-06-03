@@ -4,6 +4,7 @@ import (
     "fmt"
     "encoding/gob"
     "bytes"
+    "reflect"
 )
 
 // probably want to use "bytes" for nearly everything
@@ -82,7 +83,7 @@ type Request_Connection struct {
     Client_Protocol_Versions_Supported []uint16
     Number_Extensions_Supported uint16
     Extensions_Supported []uint16
-    Padding []byte
+//     Padding []byte
 }
 
 type Connection_Rules struct {
@@ -94,6 +95,12 @@ type Connection_Rules struct {
     Padding []byte
 }
 
+type Acknowledgement struct {
+    Response_Code uint16
+    ID_Responding_To uint16
+    Padding []byte
+}
+
 func GetFixedBytes(b *bytes.Buffer, required_size uint16) [MAX_PAYLOAD_SIZE]byte {
     // Copy the contents of the buffer into a fixed-size byte array that
     // can then be put into the Pld slot of a PTMP_Msg
@@ -101,6 +108,9 @@ func GetFixedBytes(b *bytes.Buffer, required_size uint16) [MAX_PAYLOAD_SIZE]byte
     temp_bytes := b.Bytes()
 //     fmt.Printf("Size of out_arr = %d, and size of temp_bytes = %d\n", len(out_arr), len(temp_bytes))
     for ii := 0; ii < int(MAX_PAYLOAD_SIZE) ; ii++ {
+        if ii >= len(temp_bytes){
+            break
+        }
         out_arr[ii] = temp_bytes[ii]
     }
     
@@ -119,24 +129,21 @@ func EncodePayload[V PAYLOADS](msg V) [MAX_PAYLOAD_SIZE]byte {
     return GetFixedBytes(&buff_temp, MAX_PAYLOAD_SIZE)
 }
 
-// I'm pretty sure go has a better way to do this than writing
-// encoder/decoder functions for each message type, but I haven't found
-// a clear tutorial on how to do that, so this is what I'm stuck with.
-// func (RC Request_Connection) ToBytes() [MAX_PAYLOAD_SIZE]byte {
-//     buff_temp := bytes.Buffer{}
-//     data_encoder := gob.NewEncoder(&buff_temp)
-//     data_encoder.Encode(RC)
-//
-//     return GetFixedBytes(&buff_temp, MAX_PAYLOAD_SIZE)
-// }
-//
-// func (CR Connection_Rules) ToBytes() [MAX_PAYLOAD_SIZE]byte {
-//     buff_temp := bytes.Buffer{}
-//     data_encoder := gob.NewEncoder(&buff_temp)
-//     data_encoder.Encode(CR)
-//     return GetFixedBytes(&buff_temp, MAX_PAYLOAD_SIZE)
-// }
-//
+func DecodePayload[V PAYLOADS](bytes_in [MAX_PAYLOAD_SIZE]byte) *V {
+    new_arr := make([]byte, MAX_PAYLOAD_SIZE)
+//     fmt.Printf("Bytes fed into the decoder: %+v\n",bytes_in)
+    copy(new_arr, bytes_in[:MAX_PAYLOAD_SIZE])
+//     fmt.Printf("The bytes in the copied array:%+v\n",new_arr)
+    buff_temp := bytes.NewBuffer(new_arr)
+    data_decoder := gob.NewDecoder(buff_temp)
+    v := reflect.New(reflect.TypeOf((*V)(nil)).Elem())
+//     output := &V{}
+    data_decoder.Decode(v.Interface())
+    fmt.Printf("The data_decoder: %+v\n",data_decoder)
+    fmt.Printf("The output: %+v\n", v)
+    return v.Interface().(*V)//output
+}
+
 func Decode_Connection_Rules(bytes_in [MAX_PAYLOAD_SIZE]byte) *Connection_Rules {
     new_arr := make([]byte, MAX_PAYLOAD_SIZE)
     copy(new_arr, bytes_in[:MAX_PAYLOAD_SIZE])
@@ -151,11 +158,22 @@ func Decode_Connection_Rules(bytes_in [MAX_PAYLOAD_SIZE]byte) *Connection_Rules 
 func Decode_Request_Connection(bytes_in [MAX_PAYLOAD_SIZE]byte) *Request_Connection {
     new_arr := make([]byte, MAX_PAYLOAD_SIZE)
     copy(new_arr, bytes_in[:MAX_PAYLOAD_SIZE])
+
+    fmt.Printf("Username: %v\nPassword: %v\n",string(new_arr[:32]), string(new_arr[32:63]))
+
     buff_temp := bytes.NewBuffer(new_arr)
     data_decoder := gob.NewDecoder(buff_temp)
-    rc_out := &Request_Connection{}
-    data_decoder.Decode(rc_out)
-    return rc_out
+    rc_out := Request_Connection{
+//         Username: new_arr[:32],
+//         Padding: make_padding(MAX_PAYLOAD_SIZE),
+    }
+    decoding_err := data_decoder.Decode(&rc_out)
+    if decoding_err != nil {
+        fmt.Printf("\n\nError when trying to decode a Request_Connection message:\n\t%+v\n\n",decoding_err)
+    } else {
+        fmt.Printf("\n\nDecoded the request connection message just fine.\n\n")
+    }
+    return &rc_out
 }
 
 // All PTMP_Msgs consist of a common header and a payload converted into a plain byte-array.
@@ -169,7 +187,13 @@ func EncodePacket(the_msg PTMP_Msg) []byte {
 
     buff_temp := bytes.Buffer{}
     data_encoder := gob.NewEncoder(&buff_temp)
-    data_encoder.Encode(the_msg)
+    err_status := data_encoder.Encode(the_msg)//.Hdr)
+    if err_status != nil {
+        fmt.Printf("Encoder error: \n\t%+v\n",err_status)
+    }else {
+        fmt.Printf("Encoding went just fine, apparently.")
+    }
+//     buff_temp.Write(the_msg.Pld[:])
 
     return buff_temp.Bytes()
 }
@@ -181,7 +205,12 @@ func DecodePacket(bytes_in []byte) *PTMP_Msg {
     temp_buff := bytes.NewBuffer(bytes_in)
     data_decoder := gob.NewDecoder(temp_buff)
     msg_out := &PTMP_Msg{}
-    data_decoder.Decode(msg_out)
+    err_status := data_decoder.Decode(msg_out)
+    if err_status != nil {
+        fmt.Printf("Error when decoding:\n\t%+v\n\n",err_status)
+    } else {
+        fmt.Printf("And it seems decoding went ok too.\n")
+    }
     return msg_out
 }
 
@@ -228,7 +257,7 @@ func Prep_Request_Connection(username string,
         Client_Protocol_Versions_Supported: versions_supported,
         Number_Extensions_Supported: uint16(len(extensions_supported)),
         Extensions_Supported: extensions_supported,
-        Padding: make_padding(MAX_PAYLOAD_SIZE - pld_size),
+//         Padding: make_padding(MAX_PAYLOAD_SIZE - pld_size),
     }
     uname := [USERNAME_SIZE]byte{}
     for ii :=  0; ii < int(USERNAME_SIZE); ii++ {

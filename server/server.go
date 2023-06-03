@@ -68,6 +68,7 @@ func recv() error {
         determine_response()
     }
 
+    // Close-out the connection.
     connCtx := qconn.Context()
     <-connCtx.Done()
 
@@ -93,6 +94,11 @@ func xmit(packet_out []byte) (int, error) {
 func determine_response() {
 	switch rcvdMsg.Hdr.Msg_Type_ID {
 		case ptmp.REQUEST_CONNECTION:
+            incoming_contents := ptmp.Decode_Request_Connection(rcvdMsg.Pld)
+            //incoming_contents := ptmp.DecodePayload[ptmp.Request_Connection](rcvdMsg.Pld)
+            if LOGGING_ENABLED {
+                log.Printf("The username provided was '%v', password '%v'.", string(incoming_contents.Username[:]), string(incoming_contents.Password[:]))
+            }
 			if connectionEstablished {
 				sendErrMsg(ptmp.MSG_CONTEXT_INVALID)
 			} else {
@@ -105,6 +111,7 @@ func determine_response() {
 }
 
 func sendErrMsg(response_code uint16) {
+
 }
 
 func sendConnRules() {
@@ -121,7 +128,9 @@ func main() {
 	proto_versions_supported[0] = active_proto_version
 	var err error
     qconn, err = connect_to_client(HOST)
-    log.Printf("Server just initialized, error is %+v", err)
+    if LOGGING_ENABLED {
+        log.Printf("Server just initialized, error is %+v", err)
+    }
     recv()
 
     //time.Sleep(time.Second * 2)
