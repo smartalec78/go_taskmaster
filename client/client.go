@@ -56,6 +56,7 @@ func main() {
     xmit(connection, req_conn)
     recv(connection)
 	xmit(connection, req_conn)
+    recv(connection)
 
     connection.Close()
     <-connection.Context().Done()
