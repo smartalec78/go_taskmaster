@@ -71,19 +71,14 @@ type PTMP_Header struct {
     Payload_Byte_Length uint16
 }
 
-type ByteSized interface {
-    ToBytes() [MAX_PAYLOAD_SIZE]byte
-}
-
 type Request_Connection struct {
-    Username [USERNAME_SIZE]byte // apparently go doesn't do chars, so bytes it is I guess
+    Username [USERNAME_SIZE]byte // apparently go doesn't do chars, and I don't think I can set a fixed-length string
     Password [PASSWORD_SIZE]byte 
     Timeout_Rule_Request uint16
     Client_Number_Versions_Supported uint16
     Client_Protocol_Versions_Supported []uint16
     Number_Extensions_Supported uint16
     Extensions_Supported []uint16
-//     Padding []byte
 }
 
 type Connection_Rules struct {
@@ -92,13 +87,11 @@ type Connection_Rules struct {
     Protocol_Version_To_Use uint16
     Number_Acceptable_Exts uint16
     Acceptable_Exts []uint16
-    Padding []byte
 }
 
-type Acknowledgement struct {
+type Acknowledgment struct {
     Response_Code uint16
-    ID_Responding_To uint16
-    Padding []byte
+    ID_Responding_To byte
 }
 
 func GetFixedBytes(b *bytes.Buffer, required_size uint16) [MAX_PAYLOAD_SIZE]byte {
@@ -118,7 +111,7 @@ func GetFixedBytes(b *bytes.Buffer, required_size uint16) [MAX_PAYLOAD_SIZE]byte
 }
 
 type PAYLOADS interface {
-    Request_Connection | Connection_Rules
+    Request_Connection | Connection_Rules | Acknowledgment
 }
 
 
@@ -144,37 +137,6 @@ func DecodePayload[V PAYLOADS](bytes_in [MAX_PAYLOAD_SIZE]byte) *V {
     return v.Interface().(*V)//output
 }
 
-func Decode_Connection_Rules(bytes_in [MAX_PAYLOAD_SIZE]byte) *Connection_Rules {
-    new_arr := make([]byte, MAX_PAYLOAD_SIZE)
-    copy(new_arr, bytes_in[:MAX_PAYLOAD_SIZE])
-    buff_temp := bytes.NewBuffer(new_arr)
-    data_decoder := gob.NewDecoder(buff_temp)
-    cr_out := &Connection_Rules{}
-    data_decoder.Decode(cr_out)
-    return cr_out
-}
-
-
-func Decode_Request_Connection(bytes_in [MAX_PAYLOAD_SIZE]byte) *Request_Connection {
-    new_arr := make([]byte, MAX_PAYLOAD_SIZE)
-    copy(new_arr, bytes_in[:MAX_PAYLOAD_SIZE])
-
-    fmt.Printf("Username: %v\nPassword: %v\n",string(new_arr[:32]), string(new_arr[32:63]))
-
-    buff_temp := bytes.NewBuffer(new_arr)
-    data_decoder := gob.NewDecoder(buff_temp)
-    rc_out := Request_Connection{
-//         Username: new_arr[:32],
-//         Padding: make_padding(MAX_PAYLOAD_SIZE),
-    }
-    decoding_err := data_decoder.Decode(&rc_out)
-    if decoding_err != nil {
-        fmt.Printf("\n\nError when trying to decode a Request_Connection message:\n\t%+v\n\n",decoding_err)
-    } else {
-        fmt.Printf("\n\nDecoded the request connection message just fine.\n\n")
-    }
-    return &rc_out
-}
 
 // All PTMP_Msgs consist of a common header and a payload converted into a plain byte-array.
 type PTMP_Msg struct {
@@ -182,6 +144,23 @@ type PTMP_Msg struct {
     Pld [MAX_PAYLOAD_SIZE]byte
 }
 
+// Forces a string to be no longer than the specified length.
+func trunc(inStr string, max_length uint16) string {
+    if uint16(len(inStr)) <= max_length {
+        return inStr
+    }
+    return inStr[:max_length]
+}
+
+func bool2byte(b_in bool) byte {
+    // It is ridiculous that I need to make a function for this... how is it not legal to directly cast a bool to a byte?!
+    if b_in {
+        return byte(1)
+    } else {
+        return byte(0)
+    }
+
+}
 // Encode the full PTMP_Msg into a byte array to go out over QUIC.
 func EncodePacket(the_msg PTMP_Msg) []byte {
 
@@ -226,20 +205,6 @@ func prepHdr(msg_type byte, num_to_follow byte, payload_byte_length uint16) PTMP
         }
 }
 
-// Creates an array of bytes set to zero of the length specified.
-func make_padding(num_bytes uint16) []byte {
-    arrOut := make([]byte, num_bytes)
-
-    return arrOut
-}
-
-// Forces a string to be no longer than the specified length.
-func trunc(inStr string, max_length uint16) string {
-    if uint16(len(inStr)) <= max_length {
-        return inStr
-    }
-    return inStr[:max_length]
-}
 
 
 func Prep_Request_Connection(username string,
@@ -257,7 +222,6 @@ func Prep_Request_Connection(username string,
         Client_Protocol_Versions_Supported: versions_supported,
         Number_Extensions_Supported: uint16(len(extensions_supported)),
         Extensions_Supported: extensions_supported,
-//         Padding: make_padding(MAX_PAYLOAD_SIZE - pld_size),
     }
     uname := [USERNAME_SIZE]byte{}
     for ii :=  0; ii < int(USERNAME_SIZE); ii++ {
@@ -282,16 +246,6 @@ func Prep_Request_Connection(username string,
     return req_conn
 }
 
-func bool2byte(b_in bool) byte {
-    // It is ridiculous that I need to make a function for this... how is it not legal to directly cast a bool to a byte?!
-    if b_in {
-        return byte(1)
-    } else {
-        return byte(0)
-    }
-
-}
-
 func Prep_Connection_Rules(uname_ok bool,
                            pw_ok bool,
                            proto_ver uint16,
@@ -305,20 +259,21 @@ func Prep_Connection_Rules(uname_ok bool,
                             Protocol_Version_To_Use: proto_ver,
                             Number_Acceptable_Exts: uint16(len(acceptable_exts)),
                             Acceptable_Exts: acceptable_exts,
-                            Padding: make_padding(MAX_PAYLOAD_SIZE - uint16(pld_size)),
                             }
     conn_rules.Pld = EncodePayload(pld)
     return conn_rules
 }
 
 
-func Test() {
-    fmt.Println("Entering PTMP test functions.")
-    vers_supported := []uint16{}
-    exts_supported := []uint16{}
-    rc := Prep_Request_Connection("Alec", "not a password", 42, vers_supported, exts_supported)
-    fmt.Println(rc)
-    fmt.Println(rc.Hdr)
-    fmt.Println(rc.Pld)
-    return
+func Prep_Acknowledgment(resp_code uint16,
+                         msg_responding_to byte) PTMP_Msg{
+    ack := PTMP_Msg{}
+    pld_size := 3 // 1 uint16 + 1 byte = 3 bytes
+    ack.Hdr = prepHdr(ACKNOWLEDGMENT, 0, uint16(pld_size))
+    pld := Acknowledgment{
+                          Response_Code: resp_code,
+                          ID_Responding_To: msg_responding_to,
+                          }
+    ack.Pld = EncodePayload(pld)
+    return ack
 }

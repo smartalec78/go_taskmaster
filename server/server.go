@@ -94,24 +94,28 @@ func xmit(packet_out []byte) (int, error) {
 func determine_response() {
 	switch rcvdMsg.Hdr.Msg_Type_ID {
 		case ptmp.REQUEST_CONNECTION:
-            incoming_contents := ptmp.Decode_Request_Connection(rcvdMsg.Pld)
-            //incoming_contents := ptmp.DecodePayload[ptmp.Request_Connection](rcvdMsg.Pld)
+            incoming_contents := ptmp.DecodePayload[ptmp.Request_Connection](rcvdMsg.Pld)
             if LOGGING_ENABLED {
                 log.Printf("The username provided was '%v', password '%v'.", string(incoming_contents.Username[:]), string(incoming_contents.Password[:]))
             }
 			if connectionEstablished {
-				sendErrMsg(ptmp.MSG_CONTEXT_INVALID)
+				sendAck(ptmp.MSG_CONTEXT_INVALID)
 			} else {
 				sendConnRules()
                 connectionEstablished = true
 			}
 		default:
-			sendErrMsg(ptmp.MSG_NOT_IMPLEMENTED)
+			sendAck(ptmp.MSG_NOT_IMPLEMENTED)
 	}
 }
 
-func sendErrMsg(response_code uint16) {
-
+func sendAck(response_code uint16) {
+    ack := ptmp.Prep_Acknowledgment(response_code, rcvdMsg.Hdr.Msg_Type_ID)
+    encoded := ptmp.EncodePacket(ack)
+    if LOGGING_ENABLED {
+        log.Printf("The Acknowledgment message is \n\t%+v\n and encoded as \n\t%+v\n", ack, encoded)
+    }
+    xmit(encoded)
 }
 
 func sendConnRules() {
