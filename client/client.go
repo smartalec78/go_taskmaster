@@ -107,10 +107,15 @@ func printTinfo(tinfo ptmp.T_Inf) {
 
 func main() {
     connection, _ := connect_to_server(HOST)
+
+    // As I haven't dealt with user-input scanning in Go yet, please enjoy this
+    // canned conversation between the client and the server:
+
     req_conn := ptmp.Prep_Request_Connection("Ed Ucational", "p@55w0rd", 42, []uint16{1}, []uint16{})
-    new_task := ptmp.Prep_Create_New_Task(1, 1000, "Grade this assignment", "You should give Alec an A for doing such an awesome job with this project!")
+
     xmit(connection, req_conn, true)
-//     recv(connection)
+
+    new_task := ptmp.Prep_Create_New_Task(1, 1000, "Grade this assignment", "You should give Alec an A for doing such an awesome job with this project!")
 	xmit(connection, new_task, true)
 
     new_task = ptmp.Prep_Create_New_Task(2, 1000, "Reject this!", "This is specifying a list that doesn't exist, so it should get rejected.")
@@ -123,7 +128,6 @@ func main() {
     new_task = ptmp.Prep_Create_New_Task(1, 1000, "Be yet another task", "This is the third successful task, I hope.")
     xmit(connection, new_task, true)
 
-//     recv(connection)
     querier := ptmp.Prep_Query_Tasks(0, 50000)
     xmit(connection, querier, true)
     xmit(connection, ptmp.Prep_Mark_Task_Completed(1, 1), true)
