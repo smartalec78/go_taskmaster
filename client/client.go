@@ -49,7 +49,7 @@ func connect_to_server() (net.Conn, error) {
     //
     conn, err_status := net.Dial(BASE_PROTO, host)
     if err_status != nil {
-        log.Printf("connection error (attempted host %v)", host)
+        log.Printf("connection error (attempted host %v):\n%v\n", host, err_status)
         return nil, err_status
     }
 
