@@ -2,7 +2,7 @@ module ajb497/client
 
 go 1.20
 
-require github.com/quic-go/quic-go v0.34.0
+require github.com/quic-go/quic-go v0.32.0
 
 require (
 	github.com/go-task/slim-sprig v0.0.0-20210107165309-348f09dbbbc0 // indirect
