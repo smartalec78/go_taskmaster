@@ -374,3 +374,58 @@ func Prep_Create_New_Task(list_id uint16,
     return creator
 }
 
+func Prep_Query_Tasks(min_priority uint16,
+                      max_priority uint16) PTMP_Msg {
+    query := PTMP_Msg{}
+    pld_size := 4 // 2x uint16s
+    query.Hdr = prepHdr(QUERY_TASKS, 0, uint16(pld_size))
+    pld := Query_Tasks{
+                        Maximum_Priority: max_priority,
+                        Minimum_Priority: min_priority,
+    }
+    query.Pld = EncodePayload(pld)
+    return query
+}
+
+func Prep_Task_Information(tasks []T_Inf, num_subsequent byte) PTMP_Msg {
+    info := PTMP_Msg{}
+    pld_size := uint16(len(tasks) * (2+2+1+2+1))
+    for ii := 0; ii < len(tasks); ii++ {
+        pld_size += uint16(tasks[ii].Length_of_Title) + tasks[ii].Description_Length
+    }
+    info.Hdr = prepHdr(TASK_INFORMATION, num_subsequent, pld_size)
+    pld := Task_Information{
+                            Number_of_Tasks: uint16(len(tasks)),
+                            Task_Infos: tasks,
+                            }
+    info.Pld = EncodePayload(pld)
+    return info
+}
+
+func Prep_Remove_Tasks(permit_incomplete bool,
+                       listID uint16,
+                       tasksToRemove []uint16) PTMP_Msg {
+    rmTasks := PTMP_Msg{}
+    pld_size := uint16(5 + len(tasksToRemove))
+    rmTasks.Hdr = prepHdr(REMOVE_TASK, 0, pld_size)
+    pld := Remove_Tasks{
+                        Permit_Remove_Incomplete: Bool2Byte(permit_incomplete),
+                        List_ID: listID,
+                        Num_Tasks_Remove: uint16(len(tasksToRemove)),
+                        Tasks_To_Remove: tasksToRemove,
+                        }
+    rmTasks.Pld = EncodePayload(pld)
+    return rmTasks
+}
+
+func Prep_Mark_Task_Completed(listID uint16, taskID uint16) PTMP_Msg {
+    completed := PTMP_Msg{}
+    pld_size := uint16(4)
+    completed.Hdr = prepHdr(MARK_TASK_COMPLETED, 0, pld_size)
+    pld := Mark_Task_Completed{
+                               List_ID: listID,
+                               Task_To_Mark: taskID,
+                              }
+    completed.Pld = EncodePayload(pld)
+    return completed
+}
