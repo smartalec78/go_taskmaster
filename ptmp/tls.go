@@ -28,7 +28,7 @@ func GenerateTLSConfig() *tls.Config {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("\nHere's the TLS cert: %+v\n", tlsCert)
+// 	fmt.Printf("\nHere's the TLS cert: %+v\n", tlsCert)
 	return &tls.Config{
 		Certificates: []tls.Certificate{tlsCert},
 		NextProtos:   []string{"quic-security-setup"},

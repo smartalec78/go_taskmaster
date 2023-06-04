@@ -6,6 +6,7 @@ import (
     "bytes"
     "reflect"
 )
+var PRINTING_ENABLED bool = false
 
 // probably want to use "bytes" for nearly everything
 const (
@@ -60,6 +61,8 @@ const (
     MAX_PAYLOAD_SIZE uint16 = 1024
     USERNAME_SIZE uint16 = 32
     PASSWORD_SIZE uint16 = 32
+    TITLE_MAX_LENGTH uint16 = 255
+    DESCRIPTION_MAX_LENGTH uint16 = 511
 
     CURR_PROTOCOL_VERSION  byte = 1
 )
@@ -94,6 +97,51 @@ type Acknowledgment struct {
     ID_Responding_To byte
 }
 
+type Close_Connection struct {
+    Will_Await_Ack byte
+}
+
+type Create_New_Task struct {
+    Associated_List_ID uint16
+    Priority_Value uint16
+    Length_of_Title byte // permit 1 to 255
+    Task_Title []byte
+    Length_of_Description uint16 // permit 1 to 511
+    Task_Description []byte
+}
+
+type T_Inf struct {
+    Task_Reference_Number uint16
+    Task_Priority_Value uint16
+    Length_of_Title byte // permit 1 to 255
+    Task_Title []byte
+    Description_Length uint16 // permit 1 to 511
+    Task_Description []byte
+    Completion_Status byte
+}
+
+type Task_Information struct {
+    Number_of_Tasks uint16
+    Task_Infos []T_Inf
+}
+
+type Query_Tasks struct {
+    Minimum_Priority uint16
+    Maximum_Priority uint16
+}
+
+type Remove_Tasks struct {
+    Permit_Remove_Incomplete byte
+    List_ID uint16
+    Num_Tasks_Remove uint16
+    Tasks_To_Remove []uint16
+}
+
+type Mark_Task_Completed struct {
+    List_ID uint16
+    Task_To_Mark uint16
+}
+
 func GetFixedBytes(b *bytes.Buffer, required_size uint16) [MAX_PAYLOAD_SIZE]byte {
     // Copy the contents of the buffer into a fixed-size byte array that
     // can then be put into the Pld slot of a PTMP_Msg
@@ -111,9 +159,22 @@ func GetFixedBytes(b *bytes.Buffer, required_size uint16) [MAX_PAYLOAD_SIZE]byte
 }
 
 type PAYLOADS interface {
-    Request_Connection | Connection_Rules | Acknowledgment
+    Request_Connection |
+    Connection_Rules |
+    Acknowledgment |
+    Close_Connection |
+    Create_New_Task |
+    Task_Information |
+    Query_Tasks |
+    Remove_Tasks |
+    Mark_Task_Completed
 }
 
+type STR_ARRAYS interface {
+    [USERNAME_SIZE]byte |
+    [TITLE_MAX_LENGTH]byte |
+    [DESCRIPTION_MAX_LENGTH]byte
+}
 
 func EncodePayload[V PAYLOADS](msg V) [MAX_PAYLOAD_SIZE]byte {
     buff_temp := bytes.Buffer{}
@@ -132,11 +193,22 @@ func DecodePayload[V PAYLOADS](bytes_in [MAX_PAYLOAD_SIZE]byte) *V {
     v := reflect.New(reflect.TypeOf((*V)(nil)).Elem())
 //     output := &V{}
     data_decoder.Decode(v.Interface())
-    fmt.Printf("The data_decoder: %+v\n",data_decoder)
-    fmt.Printf("The output: %+v\n", v)
+
     return v.Interface().(*V)//output
 }
 
+func arrayify[X STR_ARRAYS](in_str string) X {
+    temp_obj := reflect.New(reflect.TypeOf((*X)(nil)).Elem())
+    out_arr := temp_obj.Interface().(*X)
+    for ii := 0; ii < len(*out_arr); ii++ {
+        if ii < len(in_str) {
+            (*out_arr)[ii] = byte(in_str[ii])
+        } else {
+            (*out_arr)[ii] = 0
+        }
+    }
+    return *out_arr
+}
 
 // All PTMP_Msgs consist of a common header and a payload converted into a plain byte-array.
 type PTMP_Msg struct {
@@ -152,7 +224,7 @@ func trunc(inStr string, max_length uint16) string {
     return inStr[:max_length]
 }
 
-func bool2byte(b_in bool) byte {
+func Bool2Byte(b_in bool) byte {
     // It is ridiculous that I need to make a function for this... how is it not legal to directly cast a bool to a byte?!
     if b_in {
         return byte(1)
@@ -161,6 +233,11 @@ func bool2byte(b_in bool) byte {
     }
 
 }
+
+func Byte2Bool(b_in byte) bool {
+    return b_in != 0
+}
+
 // Encode the full PTMP_Msg into a byte array to go out over QUIC.
 func EncodePacket(the_msg PTMP_Msg) []byte {
 
@@ -169,10 +246,7 @@ func EncodePacket(the_msg PTMP_Msg) []byte {
     err_status := data_encoder.Encode(the_msg)//.Hdr)
     if err_status != nil {
         fmt.Printf("Encoder error: \n\t%+v\n",err_status)
-    }else {
-        fmt.Printf("Encoding went just fine, apparently.")
     }
-//     buff_temp.Write(the_msg.Pld[:])
 
     return buff_temp.Bytes()
 }
@@ -187,8 +261,6 @@ func DecodePacket(bytes_in []byte) *PTMP_Msg {
     err_status := data_decoder.Decode(msg_out)
     if err_status != nil {
         fmt.Printf("Error when decoding:\n\t%+v\n\n",err_status)
-    } else {
-        fmt.Printf("And it seems decoding went ok too.\n")
     }
     return msg_out
 }
@@ -217,34 +289,19 @@ func Prep_Request_Connection(username string,
 //     fmt.Printf("The payload size is %v.\n",pld_size)
     req_conn.Hdr = prepHdr(REQUEST_CONNECTION, 0, pld_size)
     pld := Request_Connection{
+        Username: arrayify[[USERNAME_SIZE]byte](username),
+        Password: arrayify[[PASSWORD_SIZE]byte](password),
         Timeout_Rule_Request: timeout_request,
         Client_Number_Versions_Supported: uint16(len(versions_supported)),
         Client_Protocol_Versions_Supported: versions_supported,
         Number_Extensions_Supported: uint16(len(extensions_supported)),
         Extensions_Supported: extensions_supported,
     }
-    uname := [USERNAME_SIZE]byte{}
-    for ii :=  0; ii < int(USERNAME_SIZE); ii++ {
-        if ii < len(username) {
-            uname[ii] = byte(username[ii])
-        } else {
-            uname[ii] = 0
-        }
-    }
-    pld.Username = uname
-    pw := [PASSWORD_SIZE]byte{}
-    for ii := range pw {
-        if ii < len(password) {
-            pw[ii] = byte(password[ii])
-        } else {
-            pw[ii] = 0
-        }
-    }
-    pld.Password = pw
     req_conn.Pld = EncodePayload(pld)//pld.ToBytes()
 
     return req_conn
 }
+
 
 func Prep_Connection_Rules(uname_ok bool,
                            pw_ok bool,
@@ -254,8 +311,8 @@ func Prep_Connection_Rules(uname_ok bool,
     pld_size := 6 + len(acceptable_exts) * 2
     conn_rules.Hdr = prepHdr(CONNECTION_RULES, 0, uint16(pld_size))
     pld := Connection_Rules{
-                            Username_Ok: bool2byte(uname_ok),
-                            Password_Ok: bool2byte(pw_ok),
+                            Username_Ok: Bool2Byte(uname_ok),
+                            Password_Ok: Bool2Byte(pw_ok),
                             Protocol_Version_To_Use: proto_ver,
                             Number_Acceptable_Exts: uint16(len(acceptable_exts)),
                             Acceptable_Exts: acceptable_exts,
@@ -277,3 +334,43 @@ func Prep_Acknowledgment(resp_code uint16,
     ack.Pld = EncodePayload(pld)
     return ack
 }
+
+func Prep_Close_Connection(will_await bool) PTMP_Msg {
+    close_conn := PTMP_Msg{}
+    pld_size := 1
+    close_conn.Hdr = prepHdr(CLOSE_CONNECTION, 0, uint16(pld_size))
+    pld := Close_Connection{Will_Await_Ack : Bool2Byte(will_await)}
+    close_conn.Pld = EncodePayload(pld)
+    return close_conn
+}
+
+func Prep_Create_New_Task(list_id uint16,
+                          priority uint16,
+                          title string,
+                          description string) PTMP_Msg {
+    if len(title) < 1 || uint16(len(title)) > TITLE_MAX_LENGTH {
+        panic(fmt.Errorf("Length of title of new task out of bounds [%v, %v].",1, TITLE_MAX_LENGTH))
+    }
+    if len(description) < 1 || uint16(len(description)) > DESCRIPTION_MAX_LENGTH {
+        panic(fmt.Errorf("Length of title of new task out of bounds [%v, %v].",1, TITLE_MAX_LENGTH))
+    }
+    creator := PTMP_Msg{}
+    pld_size := 2 + // list ID
+                2 + // priority
+                1 + // title length
+                len(title) + // duh
+                2 + // description length
+                len(description) // duh
+    creator.Hdr = prepHdr(CREATE_NEW_TASK, 0, uint16(pld_size))
+    pld := Create_New_Task{
+                            Associated_List_ID: list_id,
+                            Priority_Value: priority,
+                            Length_of_Title: byte(len(title)),
+                            Task_Title: []byte(title),
+                            Length_of_Description: uint16(len(description)),
+                            Task_Description: []byte(description),
+                          }
+    creator.Pld = EncodePayload(pld)
+    return creator
+}
+
