@@ -1,18 +1,17 @@
 package main
 
 import (
-    "context"
     "io"
     "log"
     "ajb497/ptmp"
-    "github.com/quic-go/quic-go"
     "time"
-    "fmt"
     "strings"
+    "net"
 )
 
 var buff_incoming = make([]byte, 2048)
 const HOST string = "localhost:10101" // TODO: move this to a config file
+const BASE_PROTO string = "tcp"
 const LOGGING_ENABLED bool = true
 const VALID_UNAME string = "Ed Ucational"
 const VALID_PW string = "p@55w0rd" // because we believe in super high security here at Alec's Computer Code and Fishing Tackle Emporium
@@ -25,48 +24,42 @@ var timeout_permitted uint16 = 60 // You get one minute of idle-time in the conn
 // Some convenient member variables for the server that all functions can access
 var rcvdMsg *ptmp.PTMP_Msg
 var connectionEstablished bool = false
-var qconn quic.Connection
-var stream quic.Stream
+var conn net.Conn
 var exit_program bool = false
 var active_tasks []ptmp.T_Inf
 
-// Initial setup of the QUIC connection.
-func connect_to_client(addr string) (quic.Connection, error) {
+// Initial setup of the connection.
+func connect_to_client(addr string) (net.Conn, error) {
     if LOGGING_ENABLED {
         log.Printf("Server is initializing")
     }
     // The time package was complaining about me trying to directly multiply a uint16 or int with time.Second, so I'm going with
     // this cludgey string-parsing method that I don't really like.
-    timeout, _ := time.ParseDuration(fmt.Sprintf("%ds",timeout_permitted))
-    my_config := quic.Config{MaxIdleTimeout: timeout}
-    listener, err := quic.ListenAddr(addr, ptmp.GenerateTLSConfig(), &my_config)
-    if err != nil {
-        return nil, err
+//     timeout, _ := time.ParseDuration(fmt.Sprintf("%ds",timeout_permitted))
+//     my_config := quic.Config{MaxIdleTimeout: timeout}
+//     listener, err := quic.ListenAddr(addr, ptmp.GenerateTLSConfig(), &my_config)
+    listener, err_status := net.Listen(BASE_PROTO, addr)
+
+    if err_status != nil {
+        return nil, err_status
     }
     if LOGGING_ENABLED {
         log.Printf("Server finalizing setup.")
     }
-    return listener.Accept(context.Background())
+    this_conn, err_status := listener.Accept()
+    if err_status != nil {
+        return nil, err_status
+    }
+
+    return this_conn, nil
 }
 
 // This is the core function where the server will be spending most of its time.
 func recv() error {
-    // Await a connection from the client and proceed with the stream once that's done
-    if LOGGING_ENABLED {
-        log.Printf("Server is standing-by for a connection.")
-    }
-    var err_status error
-    stream, err_status = qconn.AcceptStream(context.Background())
-    
-    if err_status != nil {
-        return err_status
-    }
-    if LOGGING_ENABLED {
-        log.Printf("Connection established.")
-    }
+
     // Continuously look for incoming messages.
     for false == exit_program {
-        num_bytes_in, err_status := stream.Read(buff_incoming)
+        num_bytes_in, err_status := conn.Read(buff_incoming)
         if (err_status != nil) && (err_status!= io.ErrUnexpectedEOF) {
             log.Printf("Error attempting to read from client:\n\t%+v\n", err_status)
             return err_status
@@ -79,10 +72,10 @@ func recv() error {
         // of what to actually do now that we've received something from the client.
         determine_response()
     }
-
+    conn.Close()
     // Close-out the connection.
-    connCtx := qconn.Context()
-    <-connCtx.Done()
+//     connCtx := qconn.Context()
+//     <-connCtx.Done()
 
     return nil
 }
@@ -90,7 +83,7 @@ func recv() error {
 // If something needs to get sent to the client, it can be provided here as a byte stream and it'll get shot right out.
 func xmit(packet_out []byte) (int, error) {
 
-	num_bytes_out, err_status := stream.Write(packet_out)
+	num_bytes_out, err_status := conn.Write(packet_out)
     if err_status != nil {
         log.Printf("Error writing to client: %+v\n", err_status)
         return 0, err_status
@@ -312,7 +305,7 @@ func completeTask(listId uint16, taskId uint16) {
 func main() {
 	proto_versions_supported[0] = active_proto_version
 	var err error
-    qconn, err = connect_to_client(HOST)
+    conn, err = connect_to_client(HOST)
     if LOGGING_ENABLED {
         log.Printf("Server just initialized, error is %+v", err)
     }

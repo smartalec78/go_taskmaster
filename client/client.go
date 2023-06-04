@@ -1,37 +1,64 @@
 package main
 
 import (
-    "context"
-    "crypto/tls"
     "io"
     "log"
     "ajb497/ptmp"
-    "github.com/quic-go/quic-go"
     "time"
+    "net"
+    "os"
+    "bufio"
+    "strings"
 )
 
 var buff_incoming = make([]byte, 2048)
-const HOST string = "localhost:10101"
+const CONFIG_FILENAME string = "client.cfg"
+var host string
 var PRINT_MSGS bool = true
 var connection_established bool = false
+const BASE_PROTO string = "tcp" // I had been planning on implementing this with QUIC, but the instruction about not using any libraries more advanced than the language's socket APIs made me switch to just plain unsecure TCP
 
-
-func connect_to_server(host string) (quic.Stream, error) {
-    tls_conf := &tls.Config{
-        InsecureSkipVerify: true,
-        NextProtos:         []string{"quic-security-setup"},
-    }
-    conn2srv, err_status := quic.DialAddr(host, tls_conf, nil)
+func readConfig() {
+    fileHandle, err_status := os.Open(CONFIG_FILENAME)
     if err_status != nil {
+        log.Printf("Error reading %v:\n%v\n",CONFIG_FILENAME, err_status)
+        return
+    }
+    rdr := bufio.NewReader(fileHandle)
+    strsIn := []string{}
+    hit_end := false
+    for false == hit_end {
+        thisLine, this_err := rdr.ReadString('\n')
+        if this_err != nil {
+            if this_err == io.EOF {
+                hit_end = true
+            } else {
+                log.Printf("Error reading line from file:\n%v\n", this_err)
+                return
+            }
+        }
+        strsIn = append(strsIn, thisLine)
+    }
+    fileHandle.Close()
+    // for now, I only plan on having one item in the config
+    host = strings.Trim(strsIn[0], "\n")
+}
+
+func connect_to_server() (net.Conn, error) {
+
+    //
+    conn, err_status := net.Dial(BASE_PROTO, host)
+    if err_status != nil {
+        log.Printf("connection error (attempted host %v)", host)
         return nil, err_status
     }
 
-    return conn2srv.OpenStreamSync(context.Background())
+    return conn, nil //conn2srv.OpenStreamSync(context.Background())
 }
 
-func recv(stream quic.Stream) (int, error) {
+func recv(conn net.Conn) (int, error) {
 
-    num_bytes_in, err_status := stream.Read(buff_incoming)
+    num_bytes_in, err_status := conn.Read(buff_incoming)
     if (err_status != nil) && (err_status != io.ErrUnexpectedEOF) {
         log.Printf("ERROR GETTING SERVER RESPONSE %+v", err_status)
         return 0, err_status
@@ -77,9 +104,9 @@ func determine_action(packet_in* ptmp.PTMP_Msg) int {
     return int(packet_in.Hdr.Msgs_To_Follow)
 }
 
-func xmit(stream quic.Stream, ptmp_out ptmp.PTMP_Msg, expect_response bool) (int, error) {
+func xmit(conn net.Conn, ptmp_out ptmp.PTMP_Msg, expect_response bool) (int, error) {
     serialized := ptmp.EncodePacket(ptmp_out)
-    num_bytes_out, err_status := stream.Write(serialized)
+    num_bytes_out, err_status := conn.Write(serialized)
     if err_status != nil {
         log.Printf("Error writing to server: %+v", err_status)
         return 0, err_status
@@ -88,7 +115,7 @@ func xmit(stream quic.Stream, ptmp_out ptmp.PTMP_Msg, expect_response bool) (int
     if expect_response{
         num_to_follow := 1
         for num_to_follow > 0 {
-            num_to_follow, err_status = recv(stream)
+            num_to_follow, err_status = recv(conn)
         }
 //         num_to_follow := recv(stream) // following a transmission, the server is supposed to respond (in most cases, at least)
     }
@@ -106,7 +133,8 @@ func printTinfo(tinfo ptmp.T_Inf) {
 }
 
 func main() {
-    connection, _ := connect_to_server(HOST)
+    readConfig()
+    connection, _ := connect_to_server()//HOST)
 
     // As I haven't dealt with user-input scanning in Go yet, please enjoy this
     // canned conversation between the client and the server:
@@ -138,5 +166,5 @@ func main() {
 
 
     connection.Close()
-    <-connection.Context().Done()
+
 }
