@@ -8,6 +8,7 @@ This is my first time coding in go, so there are certainly some inefficiencies i
 
 Per your recommendation in response to my protocol definition, I've slimmed down the implementation by limting the final version to the connection management messages and the task management messages, with those pertaining to list management omitted.  Additionally, the component of the connection setup messages pertaining to timeout has not been implemented.
 
+
 On a linux system, a demonstration of the protocol can be executed by sourcing the "run_proj.sh" script located in the root directory of the project.  Ensure that the script is being called from the root directory of the project.
 The 'run_proj.sh' script launches the server as a background process and then launches the client.
 The client relies on a configuration file (client.cfg, located in the client directory) to determine the host and port number to connect to.
@@ -20,7 +21,7 @@ The 'ptmp' folder contains the common library utilized by both the client and th
 The server is configured to listen for a TCP connection on 'localhost:10101'.
 
 
-The basic architecture follows the example of your "goquic" repo, with the quic protocol omitted and replaced with simple TCP so as to avoid utilizing third party libraries for the connection.
+The basic architecture follows the example of your "goquic" repo, with the quic protocol omitted and replaced with simple TCP so as to avoid utilizing third party libraries for the connection.  If you look at the git history of the project, you'll see that I initially was working with QUIC but then swapped it out for TCP (and the QUIC implementation was very reliant on your goquic example).
 
 Feedback to the protocol design from the implementation:
 The original design of the protocol called for concatenating the payloads of a series of messages in order to generate the full content of a message transaction, but during the implementation stage, I determined this was over-complicating the system.  Simply limiting each message to carry a single data structure in the payload (thinking specifically of the Task Information messages) greatly simplified the implementation and allowed for a more straightforward reception process instead of setting up a system to buffer inputs and await the full transmission to begin decoding (which would also lead to some memory size uncertainty).
