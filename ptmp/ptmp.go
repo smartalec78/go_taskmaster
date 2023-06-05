@@ -6,9 +6,7 @@ import (
     "bytes"
     "reflect"
 )
-var PRINTING_ENABLED bool = false
 
-// probably want to use "bytes" for nearly everything
 const (
     // MESSAGE TYPES
     // 0 Series - connection management
@@ -67,6 +65,7 @@ const (
     CURR_PROTOCOL_VERSION  byte = 1
 )
 
+// This struct goes on top of all PTMP Msgs and is used to determine how the payload should be decoded.
 type PTMP_Header struct {
     Protocol_Version byte
     Msg_Type_ID byte
@@ -74,6 +73,8 @@ type PTMP_Header struct {
     Payload_Byte_Length uint16
 }
 
+// The following structs are direct implementations of the tables of section 2.2 of my design paper
+// Note: padding is omitted from the data structures here and is added in the encoding phase.
 type Request_Connection struct {
     Username [USERNAME_SIZE]byte // apparently go doesn't do chars, and I don't think I can set a fixed-length string
     Password [PASSWORD_SIZE]byte 
@@ -147,7 +148,6 @@ func GetFixedBytes(b *bytes.Buffer, required_size uint16) [MAX_PAYLOAD_SIZE]byte
     // can then be put into the Pld slot of a PTMP_Msg
     out_arr := [MAX_PAYLOAD_SIZE]byte{}
     temp_bytes := b.Bytes()
-//     fmt.Printf("Size of out_arr = %d, and size of temp_bytes = %d\n", len(out_arr), len(temp_bytes))
     for ii := 0; ii < int(MAX_PAYLOAD_SIZE) ; ii++ {
         if ii >= len(temp_bytes){
             break
@@ -158,6 +158,9 @@ func GetFixedBytes(b *bytes.Buffer, required_size uint16) [MAX_PAYLOAD_SIZE]byte
     return out_arr
 }
 
+// By defining all of the message types as being part of a common interface type,
+// a couple of generic functions can be used for encoding and decoding the payloads
+// rather than requiring an individual encoder/decoder for each message payload type.
 type PAYLOADS interface {
     Request_Connection |
     Connection_Rules |
@@ -170,12 +173,22 @@ type PAYLOADS interface {
     Mark_Task_Completed
 }
 
+// Something I've learned during the implementation stage in go is that there is an annoying distinction
+// between slices of a specific size and byte arrays fixed at that same particular size, so
+// I've added in this interface set to allow for a generic function that can put out fixed-size
+// arrays somewhat dynamically.
 type STR_ARRAYS interface {
     [USERNAME_SIZE]byte |
     [TITLE_MAX_LENGTH]byte |
     [DESCRIPTION_MAX_LENGTH]byte
 }
 
+// The encode/decode functions follow the example of the goquic repo in using gob functions to get the byte-array representations of the structures.
+// I would have preferred to use unions for this kind of thing, but as far as I can tell, go doesn't have a concept of unions, so using gob was the most straightforward way of getting the []byte representations of the structs.
+
+// This takes any of the message payload types and converts them into a
+// byte array of exactly MAX_PAYLOAD_SIZE to be put into the
+// payload slot of a PTMP_Msg
 func EncodePayload[V PAYLOADS](msg V) [MAX_PAYLOAD_SIZE]byte {
     buff_temp := bytes.Buffer{}
     data_encoder := gob.NewEncoder(&buff_temp)
@@ -184,23 +197,33 @@ func EncodePayload[V PAYLOADS](msg V) [MAX_PAYLOAD_SIZE]byte {
 }
 
 func DecodePayload[V PAYLOADS](bytes_in [MAX_PAYLOAD_SIZE]byte) *V {
-    new_arr := make([]byte, MAX_PAYLOAD_SIZE)
-//     fmt.Printf("Bytes fed into the decoder: %+v\n",bytes_in)
-    copy(new_arr, bytes_in[:MAX_PAYLOAD_SIZE])
-//     fmt.Printf("The bytes in the copied array:%+v\n",new_arr)
-    buff_temp := bytes.NewBuffer(new_arr)
-    data_decoder := gob.NewDecoder(buff_temp)
-    v := reflect.New(reflect.TypeOf((*V)(nil)).Elem())
-//     output := &V{}
-    data_decoder.Decode(v.Interface())
+    // This function takes in a byte array sized for the message payload,
+    // and then converts it to a pointer to a struct of the type specified
+    // by the input.  I couldn't figure out a way to let the function
+    // decide the final output type on its own - if I could have, then
+    // the function would just take in the whole PTMP_Msg and do
+    // the appropriate decoding operation based on what type is specified in the header.
 
-    return v.Interface().(*V)//output
+    buff_temp := bytes.NewBuffer(bytes_in[:]) // define a buffer with the contents of the input byte array
+    data_decoder := gob.NewDecoder(buff_temp) // create a decoder object for the buffer
+    v := reflect.New(reflect.TypeOf((*V)(nil)).Elem()) // make a pointer object of the type specified by the input
+    data_decoder.Decode(v.Interface()) // and now map the input to that type
+
+    return v.Interface().(*V) // output our message payload
 }
 
 func arrayify[X STR_ARRAYS](in_str string) X {
-    temp_obj := reflect.New(reflect.TypeOf((*X)(nil)).Elem())
+    // This function is needed in order to map string inputs
+    // (such as the username, password, title, and description fields
+    // of messages) into byte arrays of fixed length (it's the
+    // fixed-length part that necessitates this, if I had been
+    // smarter about the protocol definition, I would've avoided
+    // fixed-length arrays wherever possible)
+    temp_obj := reflect.New(reflect.TypeOf((*X)(nil)).Elem()) // determines the appropriate type of fixed-size byte array to create and makes a pointer to an object matching that type
     out_arr := temp_obj.Interface().(*X)
     for ii := 0; ii < len(*out_arr); ii++ {
+        // Loop through each spot in our output array, and if there is something from the string to
+        // put into that spot, do so, otherwise, set to 0.
         if ii < len(in_str) {
             (*out_arr)[ii] = byte(in_str[ii])
         } else {
@@ -217,6 +240,7 @@ type PTMP_Msg struct {
 }
 
 // Forces a string to be no longer than the specified length.
+// This is used for the username and password fields that I naively specified as being fixed-length arrays.
 func trunc(inStr string, max_length uint16) string {
     if uint16(len(inStr)) <= max_length {
         return inStr
@@ -235,15 +259,20 @@ func Bool2Byte(b_in bool) byte {
 }
 
 func Byte2Bool(b_in byte) bool {
+    // Again, kinda crazy that the language doesn't allow some implicit casting in this most obvious of cases.
     return b_in != 0
 }
 
 // Encode the full PTMP_Msg into a byte array to go out over QUIC.
 func EncodePacket(the_msg PTMP_Msg) []byte {
 
-    buff_temp := bytes.Buffer{}
-    data_encoder := gob.NewEncoder(&buff_temp)
-    err_status := data_encoder.Encode(the_msg)//.Hdr)
+    // Note: this function is distinct form the payload encoding function because this always operates
+    // on just the one type of input: the PTMP_Msg.  The payload has already been encoded at this point
+    // and is located in the .Pld field of the "the_msg" parameter.
+
+    buff_temp := bytes.Buffer{} // create the buffer where we're going to put the encoded version
+    data_encoder := gob.NewEncoder(&buff_temp) // link the encoder to the buffer location
+    err_status := data_encoder.Encode(the_msg) // take the message and put its bytes into the buffer
     if err_status != nil {
         fmt.Printf("Encoder error: \n\t%+v\n",err_status)
     }
@@ -253,12 +282,13 @@ func EncodePacket(the_msg PTMP_Msg) []byte {
 
 // Decode the raw byte-stream that is received over a connection so that the
 // header may be parsed, thus allowing the payload of the message to be forwarded
-// to the appopriate payload decoder function.
+// to the payload decoder function with the appropriate type specification (and allow the
+// recipient to take the appropriate action for the message).
 func DecodePacket(bytes_in []byte) *PTMP_Msg {
-    temp_buff := bytes.NewBuffer(bytes_in)
-    data_decoder := gob.NewDecoder(temp_buff)
-    msg_out := &PTMP_Msg{}
-    err_status := data_decoder.Decode(msg_out)
+    temp_buff := bytes.NewBuffer(bytes_in) // define a buffer for the byte array
+    data_decoder := gob.NewDecoder(temp_buff) // link the decoder object to the buffer
+    msg_out := &PTMP_Msg{} // get our output type ready
+    err_status := data_decoder.Decode(msg_out) // map those input bytes into the PTMP_Msg object
     if err_status != nil {
         fmt.Printf("Error when decoding:\n\t%+v\n\n",err_status)
     }
@@ -268,6 +298,9 @@ func DecodePacket(bytes_in []byte) *PTMP_Msg {
 
 
 // Assembles the generic header message for all PTMP_Msgs.
+// This really just operates as a simple wrapper to the constructor for the
+// PTMP_Header type, but I wasn't sure when I was making this whether I'd be
+// putting any more smarts into the creation of the header (it ended up not needing the extra smarts).
 func prepHdr(msg_type byte, num_to_follow byte, payload_byte_length uint16) PTMP_Header {
     return PTMP_Header{
             Protocol_Version: CURR_PROTOCOL_VERSION,
@@ -279,14 +312,19 @@ func prepHdr(msg_type byte, num_to_follow byte, payload_byte_length uint16) PTMP
 
 
 
+// The following sets of functions all generate a full PTMP_Msg with a
+// payload of the specified type loaded into them using the input parameters to build the payload.
 func Prep_Request_Connection(username string,
                              password string, 
                              timeout_request uint16, 
                              versions_supported []uint16,
                              extensions_supported []uint16) PTMP_Msg {
     req_conn := PTMP_Msg{}
+    // I was looking into using something along the lines of "sizeof" such as "len" to get the size of the payloads,
+    // but from what I read, it seems I would have run into issues with getting the size of the arrays contained
+    // within the structs, so just doing this manual method with the knowledge of how the structures are defined
+    // is my simple workaround to that.
     pld_size := USERNAME_SIZE + PASSWORD_SIZE + 6 + uint16(2*len(versions_supported) + 2*len(extensions_supported))
-//     fmt.Printf("The payload size is %v.\n",pld_size)
     req_conn.Hdr = prepHdr(REQUEST_CONNECTION, 0, pld_size)
     pld := Request_Connection{
         Username: arrayify[[USERNAME_SIZE]byte](username),
@@ -297,12 +335,12 @@ func Prep_Request_Connection(username string,
         Number_Extensions_Supported: uint16(len(extensions_supported)),
         Extensions_Supported: extensions_supported,
     }
-    req_conn.Pld = EncodePayload(pld)//pld.ToBytes()
+    req_conn.Pld = EncodePayload(pld) // the payload of the final message is supposed to be a []byte, so we can't put the plain struct in as the payload.
 
     return req_conn
 }
 
-
+// Same concept as the other Prep_Msg_Name_Here functions, generates a fully prepped PTMP_Msg based on the input parameters.
 func Prep_Connection_Rules(uname_ok bool,
                            pw_ok bool,
                            proto_ver uint16,
@@ -322,6 +360,7 @@ func Prep_Connection_Rules(uname_ok bool,
 }
 
 
+// Same concept as the other Prep_Msg_Name_Here functions, generates a fully prepped PTMP_Msg based on the input parameters.
 func Prep_Acknowledgment(resp_code uint16,
                          msg_responding_to byte) PTMP_Msg{
     ack := PTMP_Msg{}
@@ -335,6 +374,7 @@ func Prep_Acknowledgment(resp_code uint16,
     return ack
 }
 
+// Same concept as the other Prep_Msg_Name_Here functions, generates a fully prepped PTMP_Msg based on the input parameters.
 func Prep_Close_Connection(will_await bool) PTMP_Msg {
     close_conn := PTMP_Msg{}
     pld_size := 1
@@ -344,6 +384,7 @@ func Prep_Close_Connection(will_await bool) PTMP_Msg {
     return close_conn
 }
 
+// Same concept as the other Prep_Msg_Name_Here functions, generates a fully prepped PTMP_Msg based on the input parameters.
 func Prep_Create_New_Task(list_id uint16,
                           priority uint16,
                           title string,
@@ -374,6 +415,7 @@ func Prep_Create_New_Task(list_id uint16,
     return creator
 }
 
+// Same concept as the other Prep_Msg_Name_Here functions, generates a fully prepped PTMP_Msg based on the input parameters.
 func Prep_Query_Tasks(min_priority uint16,
                       max_priority uint16) PTMP_Msg {
     query := PTMP_Msg{}
@@ -387,6 +429,9 @@ func Prep_Query_Tasks(min_priority uint16,
     return query
 }
 
+// Same concept as the other Prep_Msg_Name_Here functions, generates a fully prepped PTMP_Msg based on the input parameters.
+// This is the only one of my prep functions that is intended to be called repeatedly, so as part of that repetition, it needs
+// to know the number of additional calls that will be made, and it uses that to fill the header's field for number of messages to follow.
 func Prep_Task_Information(tasks []T_Inf, num_subsequent byte) PTMP_Msg {
     info := PTMP_Msg{}
     pld_size := uint16(len(tasks) * (2+2+1+2+1))
@@ -402,6 +447,7 @@ func Prep_Task_Information(tasks []T_Inf, num_subsequent byte) PTMP_Msg {
     return info
 }
 
+// Same concept as the other Prep_Msg_Name_Here functions, generates a fully prepped PTMP_Msg based on the input parameters.
 func Prep_Remove_Tasks(permit_incomplete bool,
                        listID uint16,
                        tasksToRemove []uint16) PTMP_Msg {
@@ -418,6 +464,7 @@ func Prep_Remove_Tasks(permit_incomplete bool,
     return rmTasks
 }
 
+// Same concept as the other Prep_Msg_Name_Here functions, generates a fully prepped PTMP_Msg based on the input parameters.
 func Prep_Mark_Task_Completed(listID uint16, taskID uint16) PTMP_Msg {
     completed := PTMP_Msg{}
     pld_size := uint16(4)
